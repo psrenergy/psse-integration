@@ -73,7 +73,8 @@ class SddpScenario:
         return self.stage, self.scenario, self.block
 
 
-def _read_plant_map(plant_map_file_path: str):
+def _read_plant_map(plant_map_file_path):
+    # type: (str) -> None
     entries = {}
     with open(plant_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -97,7 +98,8 @@ def _read_plant_map(plant_map_file_path: str):
     return entries
 
 
-def _read_scenario_map(scenario_map_file_path: str):
+def _read_scenario_map(scenario_map_file_path):
+    # type: (str) -> None
     entries = {}
     with open(scenario_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -112,7 +114,8 @@ def _read_scenario_map(scenario_map_file_path: str):
     return entries
 
 
-def _redistribute_weights(plant_map: dict):
+def _redistribute_weights(plant_map):
+    # type: (dict) -> None
     for plant in plant_map.keys():
         entries = plant_map[plant]
         total_weight = sum([entry.weight for entry in entries])
@@ -120,14 +123,16 @@ def _redistribute_weights(plant_map: dict):
             entry.weight /= total_weight
 
 
-def _get_required_plant_types(plant_map: dict):
+def _get_required_plant_types(plant_map):
+    # type: (dict) -> None
     types = set()
     for plant in plant_map.keys():
         types.add(plant.type)
     return types
 
 
-def _load_graf_data(base_file_path: str, encoding: str):
+def _load_graf_data(base_file_path, encoding):
+    # type: (str, str) -> Union[psr.graf.CsvReader, psr.graf.BinReader, pd.DataFrame, None]
     extensions_to_try = ".csv", ".hdr", ".dat"
     for ext in extensions_to_try:
         file_path = base_file_path + ext
@@ -144,8 +149,8 @@ def _load_graf_data(base_file_path: str, encoding: str):
     return None
 
 
-def _load_plant_types_generation(sddp_case_path: str, plant_types: set,
-                                 encoding: str):
+def _load_plant_types_generation(sddp_case_path, plant_types, encoding):
+    # type: (str, set, str) -> dict
     generation_df = {}
     for plant_type in plant_types:
         base_file_name = os.path.join(sddp_case_path,
@@ -155,7 +160,8 @@ def _load_plant_types_generation(sddp_case_path: str, plant_types: set,
     return generation_df
 
 
-def _get_required_psse_generators_names(plant_map: dict, load_map: dict):
+def _get_required_psse_generators_names(plant_map, load_map):
+    # type: (dict, dict) -> (set, set)
     generators = set()
     for plant in plant_map.keys():
         entries = plant_map[plant]
