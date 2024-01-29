@@ -83,3 +83,8 @@ Supported plant types:
 |      csp       | Concentrated solar power plant |
 | powerinjection | Power injection                |
 
+The weight value is used to distribute Sddp plant's dispatch to multiple PSS/E generators. Normally it should sum 1.0, but it's not required. If the sum is less than 1.0, the remaining power will be distributed to the first generator like the formula below:
+
+```
+PSS/E generator's Pg = weight * Sddp Plant dispatch
+```

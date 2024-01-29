@@ -198,7 +198,6 @@ def main():
         print("Reading plant -> generator map")
     plant_map_path = "sddp_plant_psse_generator_map.csv"
     plant_map = _read_plant_map(plant_map_path)
-    _redistribute_weights(plant_map)
     plant_types = _get_required_plant_types(plant_map)
     generation_df = _load_plant_types_generation(sddp_case_path, plant_types,
                                                  encoding=encoding)
