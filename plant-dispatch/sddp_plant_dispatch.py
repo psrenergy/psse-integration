@@ -47,9 +47,11 @@ class SddpPlant:
         self.system = ""
         self.name = ""
         self.type = ""
+        self.bus = 0
 
     def __hash__(self):
-        return hash("{},{},{}".format(self.system, self.name, self.type))
+        return hash("{},{},{},{}".format(self.system, self.name,
+                                         self.type, self.bus))
 
     def __eq__(self, other):
         return hash(self) == hash(other)
@@ -81,11 +83,12 @@ def _read_plant_map(plant_map_file_path: str):
             sddp_plant.system = row[0].strip().lower()
             sddp_plant.type = row[1].strip().lower()
             sddp_plant.name = row[2].strip()
+            sddp_plant.bus = int(row[3].strip())
             entry = PlantMapEntry()
             entry.plant = sddp_plant
-            entry.weight = float(row[3])
-            entry.machine_bus = int(row[4].strip())
-            entry.machine_id = row[5].strip()
+            entry.weight = float(row[4])
+            entry.machine_bus = int(row[5].strip())
+            entry.machine_id = row[6].strip()
 
             if sddp_plant not in entries.keys():
                 entries[sddp_plant] = [entry, ]

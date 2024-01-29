@@ -66,6 +66,7 @@ The file name is `sddp_plant_psse_generator_map.csv` and its column names are:
 |   System ID   | String with Sddp system id                                    |
 |  Plant Type   | String with Sddp plant type                                   |
 |  Plant Name   | String with Sddp plant name                                   |
+|   Plant Bus   | Sddp plant's bus number                                       |
 |    Weight     | Distribution weight of plant power to PSS/E generator element |
 | Generator Bus | PSS/E generator's bus number                                  |
 | Generator Id  | PSS/E generator's ID. It can be enclosed with `'`             |
