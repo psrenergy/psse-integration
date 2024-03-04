@@ -1,6 +1,8 @@
+from __future__ import print_function
 import argparse
 import csv
 import os
+import sys
 import psr.graf
 
 
@@ -32,6 +34,40 @@ _PLANT_TYPE_OUTPUT_MAP = {
 }
 
 _DURATION_FILE = "duraci"
+
+
+if "psspy" not in sys.modules:
+    psspy = None
+    _i = None
+    _f = None
+    _s = None
+
+
+def remove_plick(text):
+    # type: (str) -> str
+    return text.replace("'", "").replace("\"", "")
+
+
+def _initialize_psse(psse_path):
+    # type: (str) -> None
+    print("Initializing PSS/E")
+    global psspy
+    global redirect
+    global _i, _f, _s
+
+    if psse_path not in sys.path:
+        sys.path.append(psse_path)
+        os.environ['PATH'] = os.environ['PATH'] + ';' + psse_path
+
+    import psspy
+    psspy.psseinit(100000)
+    _i = psspy.getdefaultint()
+    _f = psspy.getdefaultreal()
+    _s = psspy.getdefaultchar()
+
+    if "psspy" not in sys.modules:
+        import redirect
+        redirect.py2psse()
 
 
 class PlantMapEntry:
@@ -89,7 +125,7 @@ def _read_plant_map(plant_map_file_path):
             entry.plant = sddp_plant
             entry.weight = float(row[4])
             entry.machine_bus = int(row[5].strip())
-            entry.machine_id = row[6].strip()
+            entry.machine_id = remove_plick(row[6].strip())
 
             if sddp_plant not in entries.keys():
                 entries[sddp_plant] = [entry, ]
@@ -185,9 +221,17 @@ def main():
     args = parser.parse_args()
 
     psse_path = args.psse_path
-    psse_case_path = args.case_path
+    psse_case_path = os.path.abspath(args.case_path)
     sddp_case_path = args.path
     encoding = args.encoding
+
+    update_dispatch(psse_path, psse_case_path, sddp_case_path,
+                    encoding=encoding)
+
+
+def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
+    global psspy, _i, _f, _s
+    encoding = kwargs.get("encoding", "utf-8")
     scenario_names_path = "scenarios_names.csv"
     if _DEBUG_PRINT:
         print("Reading scenarios_names.csv")
@@ -214,16 +258,15 @@ def main():
 
     if _DEBUG_PRINT:
         print("Starting psspy")
-    import sys
-    sys.path.append(psse_path)
-    import psspy
-    _i = psspy.getdefaultint()
-    _f = psspy.getdefaultreal()
-    _s = psspy.getdefaultchar()
-    import redirect
-    redirect.py2psse()
 
-    psspy.case(psse_case_path)
+    if "psspy" not in sys.modules:
+        _initialize_psse(psse_path)
+
+    iret = psspy.case(psse_case_path)
+    if iret != 0:
+        # to stderr
+        print("Error loading case", psse_case_path, file=sys.stderr)
+        sys.exit(1)
 
     if _DEBUG_PRINT:
         print("Loaded generators")
@@ -279,9 +322,10 @@ def main():
                 value = sddp_value * units_conversion * weight
                 if _DEBUG_PRINT:
                     print("Value read:", sddp_value, "Value assigned:", value)
-                psspy.machine_chng_2(machine_bus, machine_id,
-                                     [_i, _i, _i, _i, _i, _i],
-                                     [value,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f,_f])
+                ierr = psspy.machine_chng_2(machine_bus, machine_id,
+                                            [_i, _i, _i, _i, _i, _i],
+                                            [value,_f,_f,_f,_f,_f,_f,_f,_f,
+                                             _f,_f,_f,_f,_f,_f,_f,_f])
                 # load:
                 # psspy.load_chng_4(101,r"""1""",[_i,_i,_i,_i,_i,_i],[ 101.0,_f,_f,_f,_f,_f])
 
