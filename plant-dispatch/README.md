@@ -92,3 +92,25 @@ PSS/E generator's Pg(i) = weight(j, i) * Sddp Plant (j) dispatch
 
 It shows that all weight for a plant can have a sum bigger than 1.0, 
 and consequently PSS/E is going to see a dispatch bigger than Sddp.
+
+#### Sddp Load to PSS/E load mapping
+
+It's possible to distribute Sddp Loads' load in multiple PSS/E loads using weights. The figure below illustrates it.
+
+![Load mapping](./docs/load_map.png)
+
+The file name is `sddp_psse_load_map.csv` and its column names are:
+
+|    Column     | Description                                                   |
+|:-------------:|:--------------------------------------------------------------|
+| Sddp Bus Name | String with Sddp bus name                                     |
+|    Weight     | Distribution weight of plant power to PSS/E generator element |
+|   Load Bus    | PSS/E load's bus number                                       |
+|    Load Id    | PSS/E load's ID. It can be enclosed with `'`                  |
+
+The weight value is used to distribute Sddp bus load's to multiple PSS/E loads. 
+For a specific PSS/E load `i` associated with a Sddp bus load `j`, the PSS/e load value is like:
+
+```
+PSS/E load's Pl(i) = weight(j, i) * Sddp Bus Load (j) value
+```

@@ -33,6 +33,8 @@ _PLANT_TYPE_OUTPUT_MAP = {
     "powerinjection": "powinj",
 }
 
+_BUS_LOAD_FILE = "demxba"
+
 _DURATION_FILE = "duraci"
 
 
@@ -78,6 +80,14 @@ class PlantMapEntry:
         self.machine_id = ""
 
 
+class LoadMapEntry:
+    def __init__(self):
+        self.sddp_bus_name = ""
+        self.weight = 0.0
+        self.load_bus = 0
+        self.load_id = ""
+
+
 class SddpPlant:
     def __init__(self):
         self.system = ""
@@ -110,7 +120,7 @@ class SddpScenario:
 
 
 def _read_plant_map(plant_map_file_path):
-    # type: (str) -> None
+    # type: (str) -> dict
     entries = {}
     with open(plant_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -131,6 +141,27 @@ def _read_plant_map(plant_map_file_path):
                 entries[sddp_plant] = [entry, ]
             else:
                 entries[sddp_plant].append(entry)
+    return entries
+
+
+def _read_load_map(load_map_file_path):
+    # type: (str) -> dict
+    entries = {}
+    with open(load_map_file_path, "r") as csv_file:
+        reader = csv.reader(csv_file)
+        next(reader)
+        for row in reader:
+            sddp_load_name = row[0].strip().lower()
+            entry = LoadMapEntry()
+            entry.sddp_bus_name = row[0].strip().lower()
+            entry.weight = float(row[1])
+            entry.load_bus = int(row[2].strip())
+            entry.load_id = remove_plick(row[3].strip())
+
+            if sddp_load_name not in entries.keys():
+                entries[sddp_load_name] = [entry, ]
+            else:
+                entries[sddp_load_name].append(entry)
     return entries
 
 
@@ -160,7 +191,7 @@ def _redistribute_weights(plant_map):
 
 
 def _get_required_plant_types(plant_map):
-    # type: (dict) -> None
+    # type: (dict) -> set
     types = set()
     for plant in plant_map.keys():
         types.add(plant.type)
@@ -174,13 +205,17 @@ def _load_graf_data(base_file_path, encoding):
         file_path = base_file_path + ext
         if os.path.exists(file_path):
             if _HAS_PANDAS:
-                return psr.graf.load_as_dataframe(
+                df = psr.graf.load_as_dataframe(
                     file_path, encoding=encoding)
+                # rename columns to lower case
+                df.columns = [col.lower() for col in df.columns]
+                return df
             else:
                 ReaderClass = psr.graf.CsvReader if ext == ".csv" else \
                     psr.graf.BinReader
                 obj = ReaderClass()
                 obj.open(file_path, encoding=encoding)
+
                 return obj
     return None
 
@@ -204,7 +239,16 @@ def _get_required_psse_generators_names(plant_map, load_map):
         for entry in entries:
             generators.add((entry.machine_bus, entry.machine_id))
     loads = set()
+    for bus_name, entries in load_map.items():
+        for entry in entries:
+            loads.add((entry.load_bus, entry.load_id))
     return generators, loads
+
+
+def _load_load_load(sddp_case_path, encoding):
+    # type: (str, str) -> dict
+    base_file_name = os.path.join(sddp_case_path, _BUS_LOAD_FILE)
+    return _load_graf_data(base_file_name, encoding=encoding)
 
 
 def main():
@@ -252,9 +296,14 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     generation_df = _load_plant_types_generation(sddp_case_path, plant_types,
                                                  encoding=encoding)
 
-    loads_map = {}
+    if _DEBUG_PRINT:
+        print("Reading Sddp Bus Load -> PSSE load map")
+    load_map_path = "sddp_psse_load_map.csv"
+    load_map = _read_load_map(load_map_path)
+    load_df = _load_load_load(sddp_case_path, encoding=encoding)
+
     psse_machines, psse_loads = _get_required_psse_generators_names(plant_map,
-                                                                    loads_map)
+                                                                    load_map)
 
     if _DEBUG_PRINT:
         print("Starting psspy")
@@ -285,6 +334,8 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
                                            scenario.block)
             scenario_duration_h = all_values[0]
         units_conversion = 1000.0 / scenario_duration_h
+
+        # Update machines
         for machine_bus, machine_id in psse_machines:
             if _DEBUG_PRINT:
                 print("Setting machine", machine_bus, machine_id)
@@ -312,7 +363,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
                 gen_type_df = generation_df[plant_type]
                 if _HAS_PANDAS:
                     sddp_value = gen_type_df.loc[scenario.as_tuple(),
-                                                 plant_name][0][0]
+                                                 plant_name.lower()][0][0]
                 else:
                     agents = gen_type_df.agents
                     all_values = gen_type_df.read(scenario.stage,
@@ -326,8 +377,44 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
                                             [_i, _i, _i, _i, _i, _i],
                                             [value,_f,_f,_f,_f,_f,_f,_f,_f,
                                              _f,_f,_f,_f,_f,_f,_f,_f])
+
+        # Update loads
+        for load_bus, load_id in psse_loads:
+            if _DEBUG_PRINT:
+                print("Setting load", load_bus, load_id)
+            bus_name = None
+            weight = 1.0
+            for sddp_bus_name, load_map_entries in load_map.items():
+                for entry in load_map_entries:
+                    if load_bus == entry.load_bus and \
+                            load_id == entry.load_id:
+                        bus_name = sddp_bus_name
+                        weight = entry.weight
+                        break
+                if bus_name is not None:
+                    break
+            if bus_name is None:
+                print("Sddp Load not found for PSSE Load:", load_bus, load_id)
+            else:
+                if _DEBUG_PRINT:
+                    print("Bus Load found:", bus_name)
+                if _HAS_PANDAS:
+                    sddp_value = load_df.loc[scenario.as_tuple(),
+                                             bus_name][0][0]
+                else:
+                    agents = [agent.lower() for agent in load_df.agents]
+                    all_values = load_df.read(scenario.stage,
+                                              scenario.scenario,
+                                              scenario.block)
+                    sddp_value = all_values[agents.index(bus_name)]
+                value = sddp_value * units_conversion * weight
+                if _DEBUG_PRINT:
+                    print("Value read:", sddp_value, "Value assigned:", value)
+
                 # load:
-                # psspy.load_chng_4(101,r"""1""",[_i,_i,_i,_i,_i,_i],[ 101.0,_f,_f,_f,_f,_f])
+                ierr = psspy.load_chng_4(load_bus, load_id,
+                                         [_i,_i,_i,_i,_i,_i],
+                                         [value,_f,_f,_f,_f,_f])
 
         print("Solving case")
         psspy.fdns([0, 0, 0, 1, 1, 0, 99, 0])
