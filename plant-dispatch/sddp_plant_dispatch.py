@@ -23,6 +23,8 @@ except ImportError:
 
 _DEBUG_PRINT = False
 
+_MOCK_PSSPY = False
+
 
 _PLANT_TYPE_OUTPUT_MAP = {
     "hydroplant": "gerhid",
@@ -45,6 +47,23 @@ if "psspy" not in sys.modules:
     _s = None
 
 
+class MockPsspy:
+    def case(self, *args):
+        return 0
+
+    def machine_chng_2(self, *args):
+        return 0
+
+    def load_chng_4(self, *args):
+        return 0
+
+    def fdns(self, *args):
+        return 0
+
+    def save(self, *args):
+        return 0
+
+
 def remove_plick(text):
     # type: (str) -> str
     return text.replace("'", "").replace("\"", "")
@@ -57,19 +76,25 @@ def _initialize_psse(psse_path):
     global redirect
     global _i, _f, _s
 
-    if psse_path not in sys.path:
-        sys.path.append(psse_path)
-        os.environ['PATH'] = os.environ['PATH'] + ';' + psse_path
+    if not _MOCK_PSSPY:
+        if psse_path not in sys.path:
+            sys.path.append(psse_path)
+            os.environ['PATH'] = os.environ['PATH'] + ';' + psse_path
 
-    import psspy
-    psspy.psseinit(100000)
-    _i = psspy.getdefaultint()
-    _f = psspy.getdefaultreal()
-    _s = psspy.getdefaultchar()
+        import psspy
+        psspy.psseinit(100000)
+        _i = psspy.getdefaultint()
+        _f = psspy.getdefaultreal()
+        _s = psspy.getdefaultchar()
 
-    if "psspy" not in sys.modules:
-        import redirect
-        redirect.py2psse()
+        if "psspy" not in sys.modules:
+            import redirect
+            redirect.py2psse()
+    else:
+        psspy = MockPsspy()
+        _i = None
+        _f = None
+        _s = None
 
 
 class PlantMapEntry:
