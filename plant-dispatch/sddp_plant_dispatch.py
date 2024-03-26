@@ -25,6 +25,8 @@ _DEBUG_PRINT = False
 
 _MOCK_PSSPY = False
 
+_NCP_SUFFIX = "cp"
+
 
 _PLANT_TYPE_OUTPUT_MAP = {
     "hydroplant": "gerhid",
@@ -245,12 +247,14 @@ def _load_graf_data(base_file_path, encoding):
     return None
 
 
-def _load_plant_types_generation(sddp_case_path, plant_types, encoding):
-    # type: (str, set, str) -> dict
+def _load_plant_types_generation(sddp_case_path, plant_types, encoding,
+                                 model):
+    # type: (str, set, str, str) -> dict
+    suffix = _NCP_SUFFIX if model == "ncp" else ""
     generation_df = {}
     for plant_type in plant_types:
         base_file_name = os.path.join(sddp_case_path,
-                                      _PLANT_TYPE_OUTPUT_MAP[plant_type])
+                                      _PLANT_TYPE_OUTPUT_MAP[plant_type] + suffix)
         generation_df[plant_type] = _load_graf_data(base_file_name,
                                                     encoding=encoding)
     return generation_df
@@ -270,9 +274,10 @@ def _get_required_psse_generators_names(plant_map, load_map):
     return generators, loads
 
 
-def _load_load_load(sddp_case_path, encoding):
-    # type: (str, str) -> dict
-    base_file_name = os.path.join(sddp_case_path, _BUS_LOAD_FILE)
+def _load_load_load(sddp_case_path, encoding, model):
+    # type: (str, str, str) -> dict
+    suffix = _NCP_SUFFIX if model == "ncp" else ""
+    base_file_name = os.path.join(sddp_case_path, _BUS_LOAD_FILE + suffix)
     return _load_graf_data(base_file_name, encoding=encoding)
 
 
@@ -284,6 +289,10 @@ def main():
     parser.add_argument("-c", "--case_path", help="PSS/e sav file")
     parser.add_argument("-e", "--encoding", help="Result files encoding",
                         default="utf-8")
+    # model should be sddp or ncp
+    parser.add_argument("-m", "--model", help="Model to use",
+                        default="sddp")
+
     # Sddp case path
     parser.add_argument("-sp", "--path", help="SDDP case path",
                         default=".")
@@ -293,14 +302,20 @@ def main():
     psse_case_path = os.path.abspath(args.case_path)
     sddp_case_path = args.path
     encoding = args.encoding
+    model = args.model.lower()
+
+    if model not in ("sddp", "ncp"):
+        print("Invalid model", model)
+        sys.exit(1)
 
     update_dispatch(psse_path, psse_case_path, sddp_case_path,
-                    encoding=encoding)
+                    encoding=encoding, model=model)
 
 
 def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     global psspy, _i, _f, _s
     encoding = kwargs.get("encoding", "utf-8")
+    model = kwargs.get("model", "sddp")
     scenario_names_path = "scenarios_names.csv"
     if _DEBUG_PRINT:
         print("Reading scenarios_names.csv")
@@ -319,7 +334,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     plant_map = _read_plant_map(plant_map_path)
     plant_types = _get_required_plant_types(plant_map)
     generation_df = _load_plant_types_generation(sddp_case_path, plant_types,
-                                                 encoding=encoding)
+                                                 encoding, model)
 
     if _DEBUG_PRINT:
         print("Reading Sddp Bus Load -> PSSE load map")

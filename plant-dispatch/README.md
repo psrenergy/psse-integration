@@ -1,6 +1,6 @@
 # Plant dispatch
 
-This script distribute Sddp plant's generation in PSS/E generators.
+This script distribute SDDP or NCP plant's generation in PSS/E generators.
 
 
 ## Requirements
@@ -15,18 +15,30 @@ This script distribute Sddp plant's generation in PSS/E generators.
 ## Usage
 
 1. Run Sddp with appropriate result files enabled
-    - Thermal generation
-    - Renewable generation
-    - Hydro generation
-    - Battery generation
-    - CSP generation
-    - Power injection output
+    - Thermal generation (`gerter`)
+    - Renewable generation (`gergnd`)
+    - Hydro generation (`gerhid`)
+    - Battery generation (`gerbat`)
+    - CSP generation (`gercsp`)
+    - Power injection output (`powinj`)
 2. [Create a CSV file mapping Sddp scenarios to PSS/E scenarios (files)](#scenario-names)
 3. [Create a CSV file mapping Sddp plants to PSS/e generators](#sddp-plant-to-psse-generator-mapping)
 4. Run [](sddp_plant_dispatch.py) script:
 
 ```bat
 python sddp_plant_dispatch.py -p "path/to/psse/installation" -c "path/to/psse.sav" -sp "C:\temp\sddp_case"
+```
+
+For NCP, the steps are the same, except the output files are named as below:
+    - Thermal generation (`gertercp`)
+    - Renewable generation (`gergndcp`)
+    - Hydro generation (`gerhidcp`)
+    - Battery generation (`gerbatcp`)
+
+The command for NCP dispatch is:
+
+```bat
+python sddp_plant_dispatch.py -m ncp -p "path/to/psse/installation" -c "path/to/psse.sav" -sp "C:\temp\sddp_case"
 ```
 
 
