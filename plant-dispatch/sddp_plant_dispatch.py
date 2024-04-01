@@ -225,9 +225,9 @@ def _get_required_plant_types(plant_map):
     return types
 
 
-def _load_graf_data(base_file_path, encoding):
-    # type: (str, str) -> Union[psr.graf.CsvReader, psr.graf.BinReader, pd.DataFrame, None]
-    extensions_to_try = ".csv", ".hdr", ".dat"
+def _load_graf_data(base_file_path, encoding, extensions):
+    # type: (str, str, tuple) -> Union[psr.graf.CsvReader, psr.graf.BinReader, pd.DataFrame, None]
+    extensions_to_try = extensions
     for ext in extensions_to_try:
         file_path = base_file_path + ext
         if os.path.exists(file_path):
@@ -248,15 +248,16 @@ def _load_graf_data(base_file_path, encoding):
 
 
 def _load_plant_types_generation(sddp_case_path, plant_types, encoding,
-                                 model):
-    # type: (str, set, str, str) -> dict
+                                 model, extensions):
+    # type: (str, set, str, str, tuple) -> dict
     suffix = _NCP_SUFFIX if model == "ncp" else ""
     generation_df = {}
     for plant_type in plant_types:
         base_file_name = os.path.join(sddp_case_path,
                                       _PLANT_TYPE_OUTPUT_MAP[plant_type] + suffix)
         generation_df[plant_type] = _load_graf_data(base_file_name,
-                                                    encoding=encoding)
+                                                    encoding=encoding,
+                                                    extensions=extensions)
     return generation_df
 
 
@@ -274,11 +275,31 @@ def _get_required_psse_generators_names(plant_map, load_map):
     return generators, loads
 
 
-def _load_load_load(sddp_case_path, encoding, model):
-    # type: (str, str, str) -> dict
+def _load_load_load(sddp_case_path, encoding, model, extensions):
+    # type: (str, str, str, tuple) -> dict
     suffix = _NCP_SUFFIX if model == "ncp" else ""
     base_file_name = os.path.join(sddp_case_path, _BUS_LOAD_FILE + suffix)
-    return _load_graf_data(base_file_name, encoding=encoding)
+    return _load_graf_data(base_file_name, extensions=extensions,
+                           encoding=encoding)
+
+
+def _read_binf_from_sddp(sddp_case_path):
+    # type: (str) -> bool
+    binf_file_path = os.path.join(sddp_case_path, "sddp.dat")
+    if os.path.exists(binf_file_path):
+            with open(binf_file_path, "r") as binf_file:
+                for _ in range(52):
+                    next(binf_file)
+                for line in binf_file:
+                    options = line.split(" ")
+                    keyword = options[0]
+                    if "BINF" == keyword.upper():
+                        try:
+                            value = int(options[1])
+                            return value == 1
+                        except ValueError:
+                            return False
+    return False
 
 
 def main():
@@ -324,9 +345,18 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     if _DEBUG_PRINT:
         print("Reading durations")
 
+    if model == "ncp":
+        extensions = (".csv", )
+    else:
+        using_binary_files = _read_binf_from_sddp(sddp_case_path)
+        if using_binary_files:
+            extensions = (".hdr", )
+        else:
+            extensions = (".csv", )
+
     durations_df = _load_graf_data(os.path.join(sddp_case_path,
                                                 _DURATION_FILE),
-                                   encoding=encoding)
+                                   encoding=encoding, extensions=extensions)
 
     if _DEBUG_PRINT:
         print("Reading plant -> generator map")
@@ -334,13 +364,15 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     plant_map = _read_plant_map(plant_map_path)
     plant_types = _get_required_plant_types(plant_map)
     generation_df = _load_plant_types_generation(sddp_case_path, plant_types,
-                                                 encoding, model)
+                                                 encoding, model,
+                                                 extensions=extensions)
 
     if _DEBUG_PRINT:
         print("Reading Sddp Bus Load -> PSSE load map")
     load_map_path = "sddp_psse_load_map.csv"
     load_map = _read_load_map(load_map_path)
-    load_df = _load_load_load(sddp_case_path, encoding=encoding)
+    load_df = _load_load_load(sddp_case_path, encoding=encoding,
+                              extensions=extensions, model=model)
 
     psse_machines, psse_loads = _get_required_psse_generators_names(plant_map,
                                                                     load_map)
