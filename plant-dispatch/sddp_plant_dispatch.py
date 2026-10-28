@@ -1,25 +1,9 @@
-from __future__ import print_function
 import argparse
 import csv
 import os
 import sys
-import psr.graf
 
-
-_HAS_PANDAS = False
-try:
-    import pandas as pd
-    _HAS_PANDAS = True
-except ImportError:
-    pd = None
-
-_HAS_GRAF = False
-try:
-    import psr.graf
-    _HAS_GRAF = True
-except ImportError:
-    psr = None
-    pass
+import psr.factory
 
 _DEBUG_PRINT = False
 
@@ -40,6 +24,15 @@ _PLANT_TYPE_OUTPUT_MAP = {
 _BUS_LOAD_FILE = "demxba"
 
 _DURATION_FILE = "duraci"
+
+# Result file index level -> SddpScenario attribute. NCP results are
+# hourly, so "hour" plays the role of "block".
+_INDEX_TO_SCENARIO_ATTR = {
+    "stage": "stage",
+    "scenario": "scenario",
+    "block": "block",
+    "hour": "block",
+}
 
 
 if "psspy" not in sys.modules:
@@ -66,13 +59,11 @@ class MockPsspy:
         return 0
 
 
-def remove_plick(text):
-    # type: (str) -> str
+def remove_plick(text: str) -> str:
     return text.replace("'", "").replace("\"", "")
 
 
-def _initialize_psse(psse_path):
-    # type: (str) -> None
+def _initialize_psse(psse_path: str) -> None:
     print("Initializing PSS/E")
     global psspy
     global redirect
@@ -146,8 +137,7 @@ class SddpScenario:
         return self.stage, self.scenario, self.block
 
 
-def _read_plant_map(plant_map_file_path):
-    # type: (str) -> dict
+def _read_plant_map(plant_map_file_path: str) -> dict:
     entries = {}
     with open(plant_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -171,8 +161,7 @@ def _read_plant_map(plant_map_file_path):
     return entries
 
 
-def _read_load_map(load_map_file_path):
-    # type: (str) -> dict
+def _read_load_map(load_map_file_path: str) -> dict:
     entries = {}
     with open(load_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -192,8 +181,7 @@ def _read_load_map(load_map_file_path):
     return entries
 
 
-def _read_scenario_map(scenario_map_file_path):
-    # type: (str) -> None
+def _read_scenario_map(scenario_map_file_path: str) -> dict:
     entries = {}
     with open(scenario_map_file_path, "r") as csv_file:
         reader = csv.reader(csv_file)
@@ -208,8 +196,7 @@ def _read_scenario_map(scenario_map_file_path):
     return entries
 
 
-def _redistribute_weights(plant_map):
-    # type: (dict) -> None
+def _redistribute_weights(plant_map: dict) -> None:
     for plant in plant_map.keys():
         entries = plant_map[plant]
         total_weight = sum([entry.weight for entry in entries])
@@ -217,52 +204,80 @@ def _redistribute_weights(plant_map):
             entry.weight /= total_weight
 
 
-def _get_required_plant_types(plant_map):
-    # type: (dict) -> set
+def _get_required_plant_types(plant_map: dict) -> set:
     types = set()
     for plant in plant_map.keys():
         types.add(plant.type)
     return types
 
 
-def _load_graf_data(base_file_path, encoding, extensions):
-    # type: (str, str, tuple) -> Union[psr.graf.CsvReader, psr.graf.BinReader, pd.DataFrame, None]
-    extensions_to_try = extensions
-    for ext in extensions_to_try:
+class ResultData:
+    """SDDP/NCP result file values, looked up by scenario and agent name."""
+
+    def __init__(self, df: psr.factory.DataFrame, file_path: str):
+        self.file_path = file_path
+        self.index_names = list(df.index_names)
+        for name in self.index_names:
+            if name not in _INDEX_TO_SCENARIO_ATTR:
+                raise ValueError("Unsupported index '{}' in {}".format(
+                    name, file_path))
+        # agent names are matched case-insensitively
+        self.agents = {name.strip().lower(): i
+                       for i, name in enumerate(df.column_names)}
+        n_index = len(self.index_names)
+        self._rows = {tuple(int(v) for v in row[:n_index]): row[n_index:]
+                      for row in df.iter_rows()}
+
+    def get(self, scenario: "SddpScenario",
+            agent: str | None = None) -> float:
+        """Value of agent (first agent if None) at the given scenario.
+
+        Index levels absent from the file (e.g. scenario, for files that
+        don't vary per scenario) are ignored.
+        """
+        key = tuple(getattr(scenario, _INDEX_TO_SCENARIO_ATTR[name])
+                    for name in self.index_names)
+        try:
+            values = self._rows[key]
+        except KeyError:
+            raise KeyError("No {} {} in {}".format(
+                self.index_names, key, self.file_path)) from None
+        if agent is None:
+            return float(values[0])
+        try:
+            column = self.agents[agent.strip().lower()]
+        except KeyError:
+            raise KeyError("Agent '{}' not found in {}".format(
+                agent, self.file_path)) from None
+        return float(values[column])
+
+
+def _load_graf_data(base_file_path: str,
+                    extensions: tuple[str, ...]) -> ResultData:
+    for ext in extensions:
         file_path = base_file_path + ext
         if os.path.exists(file_path):
-            if _HAS_PANDAS:
-                df = psr.graf.load_as_dataframe(
-                    file_path, encoding=encoding)
-                # rename columns to lower case
-                df.columns = [col.lower() for col in df.columns]
-                return df
-            else:
-                ReaderClass = psr.graf.CsvReader if ext == ".csv" else \
-                    psr.graf.BinReader
-                obj = ReaderClass()
-                obj.open(file_path, encoding=encoding)
-
-                return obj
-    return None
+            df = psr.factory.load_dataframe(file_path, index_format="stage")
+            return ResultData(df, file_path)
+    raise FileNotFoundError("Result file not found: {}{}".format(
+        base_file_path, "|".join(extensions)))
 
 
-def _load_plant_types_generation(sddp_case_path, plant_types, encoding,
-                                 model, extensions):
-    # type: (str, set, str, str, tuple) -> dict
+def _load_plant_types_generation(sddp_case_path: str, plant_types: set,
+                                 model: str,
+                                 extensions: tuple[str, ...]) -> dict:
     suffix = _NCP_SUFFIX if model == "ncp" else ""
     generation_df = {}
     for plant_type in plant_types:
         base_file_name = os.path.join(sddp_case_path,
                                       _PLANT_TYPE_OUTPUT_MAP[plant_type] + suffix)
         generation_df[plant_type] = _load_graf_data(base_file_name,
-                                                    encoding=encoding,
                                                     extensions=extensions)
     return generation_df
 
 
-def _get_required_psse_generators_names(plant_map, load_map):
-    # type: (dict, dict) -> (set, set)
+def _get_required_psse_generators_names(plant_map: dict,
+                                        load_map: dict) -> tuple[set, set]:
     generators = set()
     for plant in plant_map.keys():
         entries = plant_map[plant]
@@ -275,16 +290,14 @@ def _get_required_psse_generators_names(plant_map, load_map):
     return generators, loads
 
 
-def _load_load_load(sddp_case_path, encoding, model, extensions):
-    # type: (str, str, str, tuple) -> dict
+def _load_load_load(sddp_case_path: str, model: str,
+                    extensions: tuple[str, ...]) -> ResultData:
     suffix = _NCP_SUFFIX if model == "ncp" else ""
     base_file_name = os.path.join(sddp_case_path, _BUS_LOAD_FILE + suffix)
-    return _load_graf_data(base_file_name, extensions=extensions,
-                           encoding=encoding)
+    return _load_graf_data(base_file_name, extensions=extensions)
 
 
-def _read_binf_from_sddp(sddp_case_path):
-    # type: (str) -> bool
+def _read_binf_from_sddp(sddp_case_path: str) -> bool:
     binf_file_path = os.path.join(sddp_case_path, "sddp.dat")
     if os.path.exists(binf_file_path):
             with open(binf_file_path, "r") as binf_file:
@@ -337,6 +350,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     global psspy, _i, _f, _s
     encoding = kwargs.get("encoding", "utf-8")
     model = kwargs.get("model", "sddp")
+    psr.factory.set_default_encoding(encoding)
     scenario_names_path = "scenarios_names.csv"
     if _DEBUG_PRINT:
         print("Reading scenarios_names.csv")
@@ -356,7 +370,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
 
     durations_df = _load_graf_data(os.path.join(sddp_case_path,
                                                 _DURATION_FILE),
-                                   encoding=encoding, extensions=extensions)
+                                   extensions=extensions)
 
     if _DEBUG_PRINT:
         print("Reading plant -> generator map")
@@ -364,15 +378,14 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     plant_map = _read_plant_map(plant_map_path)
     plant_types = _get_required_plant_types(plant_map)
     generation_df = _load_plant_types_generation(sddp_case_path, plant_types,
-                                                 encoding, model,
-                                                 extensions=extensions)
+                                                 model, extensions=extensions)
 
     if _DEBUG_PRINT:
         print("Reading Sddp Bus Load -> PSSE load map")
     load_map_path = "sddp_psse_load_map.csv"
     load_map = _read_load_map(load_map_path)
-    load_df = _load_load_load(sddp_case_path, encoding=encoding,
-                              extensions=extensions, model=model)
+    load_df = _load_load_load(sddp_case_path, extensions=extensions,
+                              model=model)
 
     psse_machines, psse_loads = _get_required_psse_generators_names(plant_map,
                                                                     load_map)
@@ -395,16 +408,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
         print("Loaded Scenarios")
         print(scenario_names)
     for scenario, scenario_name in scenario_names.items():
-        if _HAS_PANDAS:
-            scn_tuple = scenario.stage, scenario.block
-            scenario_duration_h = durations_df.loc[scenario.as_tuple(),
-                                                   :][0][0]
-        else:
-            agents = durations_df.agents
-            fixed_scenario = 1
-            all_values = durations_df.read(scenario.stage, fixed_scenario,
-                                           scenario.block)
-            scenario_duration_h = all_values[0]
+        scenario_duration_h = durations_df.get(scenario)
         units_conversion = 1000.0 / scenario_duration_h
 
         # Update machines
@@ -430,18 +434,8 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
             else:
                 if _DEBUG_PRINT:
                     print("Plant found:", plant.system, plant.type, plant.name)
-                plant_type = plant.type
-                plant_name = plant.name
-                gen_type_df = generation_df[plant_type]
-                if _HAS_PANDAS:
-                    sddp_value = gen_type_df.loc[scenario.as_tuple(),
-                                                 plant_name.lower()][0][0]
-                else:
-                    agents = gen_type_df.agents
-                    all_values = gen_type_df.read(scenario.stage,
-                                                  scenario.scenario,
-                                                  scenario.block)
-                    sddp_value = all_values[agents.index(plant_name)]
+                gen_type_df = generation_df[plant.type]
+                sddp_value = gen_type_df.get(scenario, plant.name)
                 value = sddp_value * units_conversion * weight
                 if _DEBUG_PRINT:
                     print("Value read:", sddp_value, "Value assigned:", value)
@@ -470,15 +464,7 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
             else:
                 if _DEBUG_PRINT:
                     print("Bus Load found:", bus_name)
-                if _HAS_PANDAS:
-                    sddp_value = load_df.loc[scenario.as_tuple(),
-                                             bus_name][0][0]
-                else:
-                    agents = [agent.lower() for agent in load_df.agents]
-                    all_values = load_df.read(scenario.stage,
-                                              scenario.scenario,
-                                              scenario.block)
-                    sddp_value = all_values[agents.index(bus_name)]
+                sddp_value = load_df.get(scenario, bus_name)
                 value = sddp_value * units_conversion * weight
                 if _DEBUG_PRINT:
                     print("Value read:", sddp_value, "Value assigned:", value)

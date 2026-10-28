@@ -5,11 +5,11 @@ This script distribute SDDP or NCP plant's generation in PSS/E generators.
 
 ## Requirements
 
-- PSS/E 33 or newer
-- Python 3.3 or newer
-  - [psr-graf](https://github.com/psrenergy/pygraf)
-    - `pip install psr-graf`
-  - optional: pandas and numpy
+- PSS/E 33 or newer, with a Python 3.10 or newer environment
+- Python 3.10 or newer
+  - [psr-factory](https://www.psr-inc.com/knowledge/solutions/additional_tools/factory/getting_started/introduction.html)
+    - `pip install -r requirements.txt`
+    - requires a valid PSR license
 
 
 ## Usage
