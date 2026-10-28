@@ -35,11 +35,10 @@ _INDEX_TO_SCENARIO_ATTR = {
 }
 
 
-if "psspy" not in sys.modules:
-    psspy = None
-    _i = None
-    _f = None
-    _s = None
+psspy = None
+_i = None
+_f = None
+_s = None
 
 
 class MockPsspy:
@@ -55,6 +54,9 @@ class MockPsspy:
     def fdns(self, *args):
         return 0
 
+    def solved(self, *args):
+        return 0
+
     def save(self, *args):
         return 0
 
@@ -64,30 +66,30 @@ def remove_plick(text: str) -> str:
 
 
 def _initialize_psse(psse_path: str) -> None:
-    print("Initializing PSS/E")
     global psspy
-    global redirect
     global _i, _f, _s
 
-    if not _MOCK_PSSPY:
+    if _MOCK_PSSPY:
+        psspy = MockPsspy()
+        _i = None
+        _f = None
+        _s = None
+        return
+
+    if "psspy" in sys.modules:
+        # launched from within PSS/E: already initialized
+        import psspy
+    else:
+        print("Initializing PSS/E")
         if psse_path not in sys.path:
             sys.path.append(psse_path)
             os.environ['PATH'] = os.environ['PATH'] + ';' + psse_path
 
         import psspy
         psspy.psseinit(100000)
-        _i = psspy.getdefaultint()
-        _f = psspy.getdefaultreal()
-        _s = psspy.getdefaultchar()
-
-        if "psspy" not in sys.modules:
-            import redirect
-            redirect.py2psse()
-    else:
-        psspy = MockPsspy()
-        _i = None
-        _f = None
-        _s = None
+    _i = psspy.getdefaultint()
+    _f = psspy.getdefaultreal()
+    _s = psspy.getdefaultchar()
 
 
 class PlantMapEntry:
@@ -276,18 +278,46 @@ def _load_plant_types_generation(sddp_case_path: str, plant_types: set,
     return generation_df
 
 
-def _get_required_psse_generators_names(plant_map: dict,
-                                        load_map: dict) -> tuple[set, set]:
-    generators = set()
-    for plant in plant_map.keys():
-        entries = plant_map[plant]
+def _build_psse_element_maps(plant_map: dict,
+                             load_map: dict) -> tuple[dict, dict]:
+    """Inverse maps: (machine bus, id) -> (plant, weight) and
+    (load bus, id) -> (sddp bus name, weight).
+
+    Raises ValueError if a PSS/E element is mapped more than once.
+    """
+    errors = []
+    machines = {}
+    plant_names = {}
+    for plant, entries in plant_map.items():
+        name_key = (plant.type, plant.name.lower())
+        other = plant_names.setdefault(name_key, plant)
+        if other != plant:
+            # result files identify plants by name only
+            print("Warning: plants {}/{} and {}/{} share the name '{}' and "
+                  "will read the same result column".format(
+                      other.system, other.bus, plant.system, plant.bus,
+                      plant.name), file=sys.stderr)
         for entry in entries:
-            generators.add((entry.machine_bus, entry.machine_id))
-    loads = set()
+            key = (entry.machine_bus, entry.machine_id)
+            if key in machines:
+                errors.append("Generator {} {} mapped to both '{}' and "
+                              "'{}'".format(*key, machines[key][0].name,
+                                            plant.name))
+            else:
+                machines[key] = (plant, entry.weight)
+    loads = {}
     for bus_name, entries in load_map.items():
         for entry in entries:
-            loads.add((entry.load_bus, entry.load_id))
-    return generators, loads
+            key = (entry.load_bus, entry.load_id)
+            if key in loads:
+                errors.append("Load {} {} mapped to both '{}' and "
+                              "'{}'".format(*key, loads[key][0], bus_name))
+            else:
+                loads[key] = (bus_name, entry.weight)
+    if errors:
+        raise ValueError("Duplicated PSS/E elements in mapping files:\n"
+                         + "\n".join(errors))
+    return machines, loads
 
 
 def _load_load_load(sddp_case_path: str, model: str,
@@ -387,103 +417,94 @@ def update_dispatch(psse_path, psse_case_path, sddp_case_path, **kwargs):
     load_df = _load_load_load(sddp_case_path, extensions=extensions,
                               model=model)
 
-    psse_machines, psse_loads = _get_required_psse_generators_names(plant_map,
-                                                                    load_map)
+    psse_machines, psse_loads = _build_psse_element_maps(plant_map, load_map)
 
     if _DEBUG_PRINT:
         print("Starting psspy")
 
-    if "psspy" not in sys.modules:
-        _initialize_psse(psse_path)
-
-    iret = psspy.case(psse_case_path)
-    if iret != 0:
-        # to stderr
-        print("Error loading case", psse_case_path, file=sys.stderr)
-        sys.exit(1)
+    _initialize_psse(psse_path)
 
     if _DEBUG_PRINT:
         print("Loaded generators")
-        print(psse_machines)
+        print(list(psse_machines.keys()))
         print("Loaded Scenarios")
         print(scenario_names)
+    not_converged = []
+    failed = []
     for scenario, scenario_name in scenario_names.items():
+        # start every scenario from the base case
+        iret = psspy.case(psse_case_path)
+        if iret != 0:
+            raise RuntimeError("Error {} loading case {}".format(
+                iret, psse_case_path))
+
         scenario_duration_h = durations_df.get(scenario)
         units_conversion = 1000.0 / scenario_duration_h
+        n_errors = 0
 
         # Update machines
-        for machine_bus, machine_id in psse_machines:
+        for (machine_bus, machine_id), (plant, weight) in psse_machines.items():
             if _DEBUG_PRINT:
-                print("Setting machine", machine_bus, machine_id)
-            # search for related plant in plant map
-            # TODO: maybe an inverse map is better
-            plant = None
-            weight = 1.0
-            for sddp_plant, plant_map_entries in plant_map.items():
-                for entry in plant_map_entries:
-                    if machine_bus == entry.machine_bus and \
-                            machine_id == entry.machine_id:
-                        plant = sddp_plant
-                        weight = entry.weight
-                        break
-                if plant is not None:
-                    break
-            if plant is None:
-                print("Plant not found for generator:", machine_bus,
-                      machine_id)
-            else:
-                if _DEBUG_PRINT:
-                    print("Plant found:", plant.system, plant.type, plant.name)
-                gen_type_df = generation_df[plant.type]
-                sddp_value = gen_type_df.get(scenario, plant.name)
-                value = sddp_value * units_conversion * weight
-                if _DEBUG_PRINT:
-                    print("Value read:", sddp_value, "Value assigned:", value)
-                ierr = psspy.machine_chng_2(machine_bus, machine_id,
-                                            [_i, _i, _i, _i, _i, _i],
-                                            [value,_f,_f,_f,_f,_f,_f,_f,_f,
-                                             _f,_f,_f,_f,_f,_f,_f,_f])
+                print("Setting machine", machine_bus, machine_id,
+                      "from plant", plant.system, plant.type, plant.name)
+            gen_type_df = generation_df[plant.type]
+            sddp_value = gen_type_df.get(scenario, plant.name)
+            value = sddp_value * units_conversion * weight
+            if _DEBUG_PRINT:
+                print("Value read:", sddp_value, "Value assigned:", value)
+            ierr = psspy.machine_chng_2(machine_bus, machine_id,
+                                        [_i, _i, _i, _i, _i, _i],
+                                        [value,_f,_f,_f,_f,_f,_f,_f,_f,
+                                         _f,_f,_f,_f,_f,_f,_f,_f])
+            if ierr != 0:
+                n_errors += 1
+                print("Error {} setting generator {} {}".format(
+                    ierr, machine_bus, machine_id), file=sys.stderr)
 
         # Update loads
-        for load_bus, load_id in psse_loads:
+        for (load_bus, load_id), (bus_name, weight) in psse_loads.items():
             if _DEBUG_PRINT:
-                print("Setting load", load_bus, load_id)
-            bus_name = None
-            weight = 1.0
-            for sddp_bus_name, load_map_entries in load_map.items():
-                for entry in load_map_entries:
-                    if load_bus == entry.load_bus and \
-                            load_id == entry.load_id:
-                        bus_name = sddp_bus_name
-                        weight = entry.weight
-                        break
-                if bus_name is not None:
-                    break
-            if bus_name is None:
-                print("Sddp Load not found for PSSE Load:", load_bus, load_id)
-            else:
-                if _DEBUG_PRINT:
-                    print("Bus Load found:", bus_name)
-                sddp_value = load_df.get(scenario, bus_name)
-                value = sddp_value * units_conversion * weight
-                if _DEBUG_PRINT:
-                    print("Value read:", sddp_value, "Value assigned:", value)
+                print("Setting load", load_bus, load_id, "from", bus_name)
+            sddp_value = load_df.get(scenario, bus_name)
+            value = sddp_value * units_conversion * weight
+            if _DEBUG_PRINT:
+                print("Value read:", sddp_value, "Value assigned:", value)
+            ierr = psspy.load_chng_4(load_bus, load_id,
+                                     [_i,_i,_i,_i,_i,_i],
+                                     [value,_f,_f,_f,_f,_f])
+            if ierr != 0:
+                n_errors += 1
+                print("Error {} setting load {} {}".format(
+                    ierr, load_bus, load_id), file=sys.stderr)
 
-                # load:
-                ierr = psspy.load_chng_4(load_bus, load_id,
-                                         [_i,_i,_i,_i,_i,_i],
-                                         [value,_f,_f,_f,_f,_f])
+        if n_errors > 0:
+            failed.append(scenario_name)
 
         print("Solving case")
-        psspy.fdns([0, 0, 0, 1, 1, 0, 99, 0])
+        ierr = psspy.fdns([0, 0, 0, 1, 1, 0, 99, 0])
+        solved = psspy.solved()
+        if ierr != 0 or solved != 0:
+            not_converged.append(scenario_name)
+            print("Warning: {} did not converge (fdns error {}, solved "
+                  "status {})".format(scenario_name, ierr, solved),
+                  file=sys.stderr)
+
         print("Saving to", scenario_name)
-        psspy.save(scenario_name)
+        ierr = psspy.save(scenario_name)
+        if ierr != 0:
+            raise RuntimeError("Error {} saving {}".format(ierr,
+                                                           scenario_name))
 
         if _DEBUG_PRINT:
             print("Scenario created", scenario_name)
-        # app.PrintInfo("Scenario created: " + scenario_name)
-    print("Finished")
-    # app.PrintInfo("Finished")
+
+    print("Finished: {} scenarios saved".format(len(scenario_names)))
+    if failed:
+        print("Scenarios with generator/load update errors:",
+              ", ".join(failed), file=sys.stderr)
+    if not_converged:
+        print("Scenarios saved without a converged solution:",
+              ", ".join(not_converged), file=sys.stderr)
 
 
 if __name__ == "__main__":
